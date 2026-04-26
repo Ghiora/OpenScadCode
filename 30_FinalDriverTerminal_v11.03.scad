@@ -1,0 +1,251 @@
+// Copyright (C) 2025 Arif K. Rafiq
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+
+// You should have received a copy of the GNU General Public License
+// along with this file.  If not, see <https://www.gnu.org/licenses/>,
+// or write to: license@temperedoptimism.com
+
+
+/*
+(b)readth       : (w)est (X-)   (c)entre (X0)   (e)ast (X+)
+(h)eight        : (d)own (Z-)   (g)round (Z0)   (u)p (Z+)
+(l)ength        : (s)outh (Y-)  (m)iddle (Y0)   (n)orth (Y+)
+
+Vectors (v)     : (x), (y), (z)
+Thicknesses (t) : Thicknessess to resolve 3D printer limits or rendering issues
+Proportion (p)  : container for grouping (r)adius and (i)ntensity into a single 2d vector accessed using .x and .y respectively
+Radii (r)       : outer radius of a circle or a k-sided polygon
+Angle (a)       : angle
+Items (i)       : list of items
+Iterators (j,k) : generic iterators/counters
+Origin (o)      : scalar value representing handy measurement origins
+Quantum (q)     ; discrete measure of an item or index of the item in a list
+*/
+
+/* [Thicknesses (x), (y), (z)] */
+tFitGap = [0.16, 0.16, 0.16]; //[0.00:0.01:0.64]
+tWallMin = [0.40, 0.40, 0.16]; //[0.16:0.08:1.60]
+/* [Proportional (x):(r)adius, (y):(i)ntensity] */
+pHexSink = [3.50, 2.30]; //[0.10:0.02:20.00]
+pFastShaft064 = [1.36, 5.80]; //[0.10:0.02:20.00]
+pFastShaft095 =[1.36, 9.30]; //[0.10:0.02:20.00]
+pWashSink = [4.00, 1.00]; //[0.10:0.02:20.00]
+/* [2D vectors (x), (y)] */
+vTerminalW = [5.0, 5.0]; //[0.00:0.10:100.00]
+vTerminalE = [23.4, 5.0]; //[0.00:0.10:100.00]
+vThermal = [15.4, 13.6]; //[0.00:0.10:100.00]
+vIndicator = [14.2, 2.4]; //[0.00:0.10:100.00]
+/* [Scalars] */
+supportAngle = 15; //[1:1:60]
+yControllerThermal = 5.0; //[5.0:0.1:8.4]
+leadingEdge = 2.4; //[0.8:0.4:5.0]
+flankEdge = 1.6; //[0.8:0.4:5.0]
+trailingEdge = 1.6; //[0.8:0.4:3.6]
+bBoardDriver = 28.4; //[20:0.1:100.0]
+hBoardDriver = 1.6; //[0.8:0.4:3.2]
+hBoardController = 1.6; //[0.8:0.4:3.2]
+hSpacer = 4.2; //[2.8:0.4:14]
+hRecess = 1.2; //[0.4:0.4:2.4]
+rCorner = 1.6; //0.1
+rTerminal = 5.0; //0.1
+rThermal = 5.0; //0.1
+rIndicator = 2.4; //0.1
+/* [Special] */
+fa0 = 4.0; //[1:1:60]
+fs0 = 0.4; //[0.1:0.1:4.0]
+fx0 = 3; //[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+/* [Hidden] */
+tEps = 0.01; //0.1
+
+/* [Calculated at runtime] */
+pHexSurround = [pHexSink.x +(tWallMin.x *2) +tFitGap.x, pHexSink.y +tWallMin.y +tFitGap.y];
+pExtension = [pFastShaft064.x +((tWallMin.x +tFitGap.x) *2), pFastShaft064.y +tWallMin.y +tFitGap.y -pHexSurround.y -hBoardDriver -pWashSink.y];
+aControllerRest = asin((vThermal.y -yControllerThermal -tFitGap.z -vTerminalW.y)/rThermal);
+
+module lollipop(b=2.0, l=8.0, r=4.0, h=tWallMin.z, cap="flat") {
+    linear_extrude(h, convexity=fx0) {
+        translate([-b/2, 0]) square([b, l]);
+        translate([0, l]) circle(r, $fa=fa0, $fs=fs0);
+        if(cap == "square") translate([-b /2, -b]) square([b, b]);
+        else if(cap == "point") polygon([[-b /2, 0], [0, -b /2], [b /2, 0]]);
+        else if(cap == "pointLeft") polygon([[-b /2, 0], [-b /2, -b], [b /2, 0]]);
+        else if(cap == "pointRight") polygon([[-b /2, 0], [b /2, -b], [b /2, 0]]);
+    }
+}
+
+function arcPoints(r, a0, a1, v=[0,0], $fa=12, $fs=2, $fn=0) =
+    let (f = $fn > 0 ? (a1 - a0) /$fn : sign(a1 - a0) *max($fa ,($fs*360) /(2 *PI *r)))
+    (a1 - a0) % f == 0
+    ? [for(a = [a0:f:a1]) [r *cos(a), r *sin(a)] +v]
+    : [for(a = [a0:f:a1]) [r *cos(a), r *sin(a)] +v, [r *cos(a1), r *sin(a1)] +v];
+
+function reversePoints(i) = [for(j = [len(i)-1:-1:0]) i[j]];
+
+function extrudePoints(i, v) =
+    v.x == 0 && v.y == 0
+    ? [for(j = [0:len(i)-1]) [i[j].x, i[j].y, v.z]]
+    : v.x == 0 && v.z == 0
+        ? [for(j = [0:len(i)-1]) [i[j].x, v.y, i[j].y]]
+        : v.y == 0 && v.z == 0
+            ? [for(j = [0:len(i)-1]) [v.x, i[j].x, i[j].y]]
+            : i;
+
+rotate([90, 0, 0]) {
+    difference() {
+        union() {
+            // hex pocket surround
+            linear_extrude(pHexSurround.y, convexity=fx0) {
+                polygon([[vTerminalW.x +pHexSurround.x, vTerminalW.y]
+                    ,[vTerminalW.x +pHexSurround.x, -leadingEdge]
+                    ,[-flankEdge, -leadingEdge]
+                    ,[-flankEdge, vTerminalW.y -rCorner]
+                    ,[-flankEdge +rCorner, vTerminalW.y]]);
+                polygon([[vTerminalE.x -pHexSurround.x, vTerminalE.y]
+                    ,[vTerminalE.x -pHexSurround.x, -leadingEdge]
+                    ,[bBoardDriver +flankEdge, -leadingEdge]
+                    ,[bBoardDriver +flankEdge, vTerminalE.y -rCorner]
+                    ,[bBoardDriver +flankEdge -rCorner, vTerminalE.y]]);
+                for(v = [vTerminalW, vTerminalE]) {
+                    translate(v) circle(pHexSurround.x, $fa=fa0, $fs=fs0);
+                }
+            }
+            // shaft extension
+            for(v = [vTerminalW, vTerminalE]) {
+                translate([v.x, v.y, pHexSurround.y -tEps]) rotate([0, 0, 180]) cylinder(pExtension.y +tEps, r=pExtension.x, $fa=fa0, $fs=fs0, $fn=48);
+            }
+            // board spacer
+            translate([0, 0, -hBoardDriver -tFitGap.y -hSpacer]) linear_extrude(hSpacer, convexity=fx0) {
+                polygon(concat([[-flankEdge, -leadingEdge]
+                    ,[bBoardDriver +flankEdge, -leadingEdge]]
+                    ,arcPoints(rCorner, 0, 90, [bBoardDriver +flankEdge -rCorner, vTerminalE.y +rTerminal +trailingEdge -rCorner], $fa=fa0, $fs=fs0)
+                    ,[[vThermal.x +rThermal +(tWallMin.x *2), vTerminalE.y +rTerminal +trailingEdge]
+                    ,[vThermal.x +rThermal +(tWallMin.x *2), vThermal.y]
+                    ,[vThermal.x -rThermal -(tWallMin.x *2), vThermal.y]
+                    ,[vThermal.x -rThermal -(tWallMin.x *2), vTerminalW.y +rTerminal +trailingEdge]]
+                    ,arcPoints(rCorner, 90, 180, [-flankEdge +rCorner, vTerminalW.y +rTerminal +trailingEdge -rCorner], $fa=fa0, $fs=fs0)));
+                translate(vThermal) circle(rThermal +(tWallMin.x *2), $fa=fa0, $fs=fs0);
+            }
+            iArcPointsControllerRestW = arcPoints(rTerminal, 0, aControllerRest, vTerminalW, $fa=fa0, $fs=fs0);
+            iArcPointsControllerRestE = reversePoints(arcPoints(rTerminal, 180, 180 -aControllerRest, vTerminalE, $fa=fa0, $fs=fs0));
+            // controller rest
+            translate([0, 0, -hBoardDriver -tFitGap.y -hSpacer -hBoardController -tFitGap.y -tEps]) linear_extrude(hBoardController +tFitGap.y +(tEps *2), convexity=fx0) {
+                polygon(concat([[vTerminalW.x +rTerminal, -leadingEdge]]
+                    ,iArcPointsControllerRestW
+                    ,iArcPointsControllerRestE
+                    ,[[vTerminalE.x -rTerminal, -leadingEdge]]));
+            }
+            // thermal hex pocket
+            translate([0, 0, -hBoardDriver -tFitGap.y -hSpacer -hBoardController -tFitGap.y -pHexSink.y -tFitGap.y]) linear_extrude(pHexSink.y +tFitGap.y, convexity=fx0) {
+                polygon(concat(arcPoints(pHexSink.x +tFitGap.x +(tWallMin.x *4), 90, -30, vThermal, $fn=2)
+                    ,iArcPointsControllerRestE
+                    ,[[vTerminalE.x -rTerminal, -leadingEdge]
+                    ,[vTerminalW.x +rTerminal, -leadingEdge]]
+                    ,iArcPointsControllerRestW
+                    ,arcPoints(pHexSink.x +tFitGap.x +(tWallMin.x *4), 210, 90, vThermal, $fn=2)
+                    ,arcPoints(pHexSink.x +tFitGap.x, 90, 450, vThermal, $fn=6)));
+            }
+        }
+        for(v = [vTerminalW, vTerminalE]) {
+            // hex pocket
+            translate([v.x, v.y, -tEps]) rotate([0, 0, 30]) cylinder(pHexSurround.y -tWallMin.y +tEps, r=pHexSurround.x -(tWallMin.x *2), $fn=6);
+            // fastener hole
+            #translate([v.x, v.y, -hBoardDriver -pWashSink.y]) cylinder(pFastShaft064.y +tFitGap.y, r=pFastShaft064.x +(tFitGap.x *2), $fa=fa0, $fs=fs0);
+        }
+        #translate([vThermal.x, vThermal.y, -hBoardDriver +pWashSink.y]) rotate([0, 180, 0]) cylinder(pFastShaft095.y +tFitGap.y, r=pFastShaft095.x +(tFitGap.x *4), $fa=fa0, $fs=fs0);
+        // terminal guide
+        iPointsTerminalGuide = concat(arcPoints(rTerminal, 0, 180, $fa=fa0, $fs=fs0), [[-rTerminal, -vTerminalW.y -leadingEdge -tEps], [rTerminal, -vTerminalW.y -leadingEdge -tEps]]);
+        translate([vTerminalW.x, vTerminalW.y, -hBoardDriver -tFitGap.y -hSpacer -tEps]) linear_extrude(hSpacer +(tEps *2), convexity=fx0) polygon(iPointsTerminalGuide);
+        translate([vTerminalE.x, vTerminalE.y, -hBoardDriver -tFitGap.y -hSpacer -tEps]) linear_extrude(hSpacer +(tEps *2), convexity=fx0) mirror([1, 0, 0]) polygon(iPointsTerminalGuide);
+        // thermal recess
+        aThermalStart = -acos((vIndicator.x +rIndicator -vThermal.x) /rThermal);
+        aThermalEnd = 360 -acos(((vIndicator.x -rIndicator) -vThermal.x)/rThermal);
+        translate([vThermal.x, vThermal.y, -hBoardDriver -tFitGap.y -hSpacer -tEps]) cylinder(hRecess +tEps, r=rThermal, $fa=fa0, $fs=fs0);
+        translate([0, 0, -hBoardDriver -tFitGap.y -hRecess]) linear_extrude(hRecess +tEps) {
+            polygon(concat(arcPoints(rThermal, aThermalStart, aThermalEnd, vThermal, $fa=fa0, $fs=0), arcPoints(rIndicator, 180, 360, vIndicator, $fa=fa0, $fs=fs0)));
+        }
+    }
+}
+
+// improved bed adhesion
+translate([0, 0, -leadingEdge]) {
+    translate([-flankEdge /2, hBoardDriver +tFitGap.y +hSpacer -tEps, 0]) lollipop(flankEdge);
+    translate([bBoardDriver +(flankEdge /2), hBoardDriver +tFitGap.y +hSpacer -tEps, 0]) lollipop(flankEdge);
+    translate([-flankEdge, -pHexSurround.y, 0]) rotate([0, 0, 135]) lollipop(cap="square");
+    translate([bBoardDriver +flankEdge, -pHexSurround.y, 0]) rotate([0, 0, -135]) lollipop(cap="square");
+    translate([vTerminalW.x +pHexSurround.x, -pHexSurround.y, 0]) rotate([0, 0, 180]) lollipop(cap="point");
+    translate([vTerminalE.x -pHexSurround.x, -pHexSurround.y, 0]) rotate([0, 0, 180]) lollipop(cap="point");
+    translate([vTerminalW.x +rTerminal, hBoardDriver + hBoardController +(tFitGap.y *3) +hSpacer +pHexSink.y]) rotate([0, 0, 10]) lollipop(cap="pointRight");
+    translate([vTerminalE.x -rTerminal, hBoardDriver + hBoardController +(tFitGap.y *3) +hSpacer +pHexSink.y]) rotate([0, 0, -10]) lollipop(cap="pointLeft");
+}
+
+// driver board rim
+oRimWo = -flankEdge;
+oRimEo = bBoardDriver +flankEdge;
+oRimSo = -tEps;
+oRimNo = hBoardDriver +tFitGap.y +tEps;
+oRimDo = -leadingEdge;
+oRimUEo = vTerminalE.y +rTerminal +trailingEdge -rCorner -flankEdge -tFitGap.y;
+oRimEi = bBoardDriver +(tFitGap.x /2);
+oRimDi = -tFitGap.z;
+oRimWi = -tFitGap.x /2;
+oRimUWo = vTerminalW.y +rTerminal +trailingEdge -rCorner -flankEdge -tFitGap.y;
+iPointsRim = [[oRimWo, oRimSo, oRimDo] // p00
+    ,[oRimWo, oRimNo, oRimDo] // p01
+    ,[oRimEo, oRimSo, oRimDo] // p02
+    ,[oRimEo, oRimNo, oRimDo] // p03
+    ,[oRimEo, oRimSo, oRimUEo] // p04
+    ,[oRimEo, oRimNo, oRimUEo] // p05
+    ,[oRimEi, oRimSo, oRimUEo] // p06
+    ,[oRimEi, oRimNo, oRimUEo] // p07
+    ,[oRimEi, oRimSo, oRimDi] // p08
+    ,[oRimEi, oRimNo, oRimDi] // p09
+    ,[oRimWi, oRimSo, oRimDi] // p10
+    ,[oRimWi, oRimNo, oRimDi] // p11
+    ,[oRimWi, oRimSo, oRimUWo] // p12
+    ,[oRimWi, oRimNo, oRimUWo] // p13
+    ,[oRimWo, oRimSo, oRimUWo] // p14
+    ,[oRimWo, oRimNo, oRimUWo]]; // p15
+iFacesRim = [[0, 2, 3, 1] // DOWN outside
+    ,[2, 4, 5, 3] // EAST outside
+    ,[4, 6, 7, 5] // UP EASTside
+    ,[6, 8, 9, 7] // EAST inside
+    ,[8, 10, 11, 9] // DOWN inside
+    ,[10, 12, 13, 11] // WEST inside
+    ,[12, 14, 15, 13] // UP WESTside
+    ,[14, 0, 1, 15] // WEST outside
+    ,[14, 12, 10, 8, 6, 4, 2, 0] // SOUTH outside
+    ,[1, 3, 5, 7, 9, 11, 13, 15]]; // NORTH outside
+polyhedron(iPointsRim, iFacesRim, convexity=fx0);
+
+// rounded tips
+translate([oRimEo, oRimSo, oRimUEo -tEps]) rotate([90, 0, 180]) rotate_extrude(angle=90, $fa=fa0, $fs=fs0, convexity=fx0) square([oRimEo -oRimEi, oRimNo -oRimSo]);
+translate([oRimWo, oRimSo, oRimUWo -tEps]) mirror ([1, 0, 0]) rotate([90, 0, 180]) rotate_extrude(angle=90, $fa=fa0, $fs=fs0, convexity=fx0) square([oRimEo -oRimEi, oRimNo -oRimSo]);
+
+// shaft extension support
+for(v = [vTerminalW, vTerminalE]) {
+    iArcNorth = extrudePoints(arcPoints(pExtension.x -tEps, 180, 360, [v.x, v.y], $fn=24), [0, -pHexSurround.y +tEps, 0]);
+    iArcSouth = extrudePoints(arcPoints(pExtension.x -tEps, 180, 360, [v.x, v.y], $fn=24), [0, -pHexSurround.y -pExtension.y, 0]);
+    iArcDown = extrudePoints(arcPoints(pExtension.x *0.85, 180, 360, [v.x, v.y -(pExtension.y /tan(supportAngle))], $fn=24), [0, -pHexSurround.y +tEps, 0]);
+    iPoint = concat(iArcNorth, iArcSouth, iArcDown);
+    qN = 0;
+    qNf = len(iArcNorth) -1;
+    qS = len(iArcNorth);
+    qSf = qS +len(iArcSouth) -1;
+    qD = qS +len(iArcSouth);
+    qDf = qD +len(iArcDown) -1;
+    iFacesW = [[qS, qD, qN]];
+    iFacesE = [[qNf, qDf, qSf]];
+    iFacesU = [for(k = [0:qNf -1]) [k +qN, k +qN +1, k +qS +1, k +qS]];
+    iFacesN = [for(k = [0:qNf -1]) [k +qD, k +qD +1, k +qN +1, k +qN]];
+    iFacesS = [for(k = [0:qNf -1]) each [[k +qD +1, k +qD, k +qS], [k +qS +1, k +qD +1, k +qS]]];
+    iFace = concat(iFacesW, iFacesE, iFacesU, iFacesN, iFacesS);
+    polyhedron(iPoint, iFace, convexity=fx0);
+}
